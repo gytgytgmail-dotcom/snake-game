@@ -1,137 +1,439 @@
-<canvas id="c" width="600" height="400" style="display:block;margin:0 auto;border-radius:var(--border-radius-lg);border:0.5px solid var(--color-border-tertiary);background:#1a1a2e;cursor:default;max-width:100%"></canvas>
-<div id="info" style="text-align:center;margin-top:8px;font-size:13px;color:var(--color-text-secondary)">方向键 / WASD 控制 · R 键重新开始</div>
-<script>
-const canvas = document.getElementById('c');
-const ctx = canvas.getContext('2d');
-const W = 600, H = 400, SZ = 20;
-const COLS = W/SZ, ROWS = H/SZ;
-const COLORS = {
-  bg: '#1a1a2e',
-  grid: 'rgba(255,255,255,0.03)',
-  snakeHead: '#4ade80',
-  snakeBody: '#22c55e',
-  snakeBorder: '#16a34a',
-  food: '#f87171',
-  foodBorder: '#dc2626',
-  text: '#f1f5f9',
-  overlay: 'rgba(10,10,30,0.82)',
-  score: '#94a3b8',
-  accent: '#818cf8'
-};
-let snake, dir, nextDir, food, score, best, state, timer, moveInterval;
-best = 0;
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>贪吃蛇</title>
+  <style>
+    /* ── 全局重置与页面布局 ── */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
 
+    body {
+      background: #0f0f1a;          /* 深色背景，营造游戏氛围 */
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      color: #f1f5f9;
+      user-select: none;            /* 防止鼠标拖拽时选中文字 */
+    }
+
+    h1 {
+      font-size: 22px;
+      font-weight: 500;
+      letter-spacing: 4px;
+      color: #4ade80;
+      margin-bottom: 14px;
+      text-transform: uppercase;
+    }
+
+    /* ── 画布容器：加边框和圆角 ── */
+    #canvas-wrap {
+      position: relative;
+      border: 1px solid rgba(74, 222, 128, 0.25);
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 0 40px rgba(74, 222, 128, 0.08);
+    }
+
+    canvas {
+      display: block;
+    }
+
+    /* ── 底部提示文字 ── */
+    #hint {
+      margin-top: 12px;
+      font-size: 13px;
+      color: #64748b;
+      letter-spacing: 1px;
+    }
+  </style>
+</head>
+<body>
+
+<h1>贪吃蛇</h1>
+
+<div id="canvas-wrap">
+  <!-- 游戏画布：600×400，所有图形都画在这里 -->
+  <canvas id="gameCanvas" width="600" height="400"></canvas>
+</div>
+
+<p id="hint">方向键 / WASD 移动 &nbsp;·&nbsp; R 重新开始</p>
+
+<script>
+// ══════════════════════════════════════════════
+//  常量配置
+// ══════════════════════════════════════════════
+const CANVAS_W  = 600;   // 画布宽度（像素）
+const CANVAS_H  = 400;   // 画布高度（像素）
+const CELL_SIZE = 20;    // 每个格子的大小（像素）
+const COLS = CANVAS_W / CELL_SIZE;  // 横向格子数 = 30
+const ROWS = CANVAS_H / CELL_SIZE;  // 纵向格子数 = 20
+const SPEED_MS = 200;    // 每步间隔（毫秒）, 1000/200 = 每秒移动5格
+
+// 调色板：集中管理所有颜色，方便主题修改
+const COLOR = {
+  bg:         '#1a1a2e',            // 游戏背景
+  grid:       'rgba(255,255,255,0.03)', // 网格线（极淡）
+  snakeHead:  '#4ade80',            // 蛇头：亮绿
+  snakeBody:  '#22c55e',            // 蛇身：中绿
+  snakeEye:   '#0f172a',            // 蛇眼：深色
+  food:       '#f87171',            // 食物：红色
+  foodShine:  'rgba(252,165,165,0.5)', // 食物高光
+  scoreText:  '#f1f5f9',            // 分数文字：亮白
+  scoreMuted: '#64748b',            // 最高分文字：灰
+  overlay:    'rgba(8,8,24,0.85)',  // 遮罩层（游戏开始/结束）
+  accent:     '#818cf8',            // 强调色：紫（用于新纪录提示）
+  danger:     '#f87171',            // 危险色：红（用于"游戏结束"）
+  green:      '#4ade80',            // 主绿色
+};
+
+// ══════════════════════════════════════════════
+//  获取画布上下文
+// ══════════════════════════════════════════════
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+
+// ══════════════════════════════════════════════
+//  游戏状态变量
+// ══════════════════════════════════════════════
+let snake;       // 蛇的身体，Array<{x, y}>，头部为 snake[0]
+let dir;         // 当前移动方向 {x, y}，如向右为 {x:1, y:0}
+let nextDir;     // 下一帧将要执行的方向（防止同帧内多次按键造成穿透）
+let food;        // 食物坐标 {x, y}
+let score;       // 当前分数
+let best = 0;    // 历史最高分（刷新页面前保留）
+let state;       // 游戏状态：'idle'（待机）| 'play'（游戏中）| 'over'（结束）
+let timer;       // setInterval 句柄，用于控制游戏主循环
+
+// ══════════════════════════════════════════════
+//  初始化 / 重置游戏
+// ══════════════════════════════════════════════
 function init() {
-  const cx = Math.floor(COLS/2), cy = Math.floor(ROWS/2);
-  snake = [{x:cx,y:cy},{x:cx-1,y:cy},{x:cx-2,y:cy}];
-  dir = {x:1,y:0}; nextDir = {x:1,y:0};
-  score = 0; state = 'play';
-  spawnFood();
-  clearInterval(timer);
-  timer = setInterval(step, 200);
+  // 蛇初始位于画面中心，水平朝右，长度3格
+  const cx = Math.floor(COLS / 2);
+  const cy = Math.floor(ROWS / 2);
+  snake   = [
+    { x: cx,   y: cy },   // 头
+    { x: cx-1, y: cy },   // 身体第1节
+    { x: cx-2, y: cy },   // 身体第2节（尾）
+  ];
+
+  dir     = { x: 1, y: 0 };  // 初始向右移动
+  nextDir = { x: 1, y: 0 };
+  score   = 0;
+  state   = 'play';
+
+  spawnFood();               // 随机生成第一个食物
+
+  clearInterval(timer);      // 清除旧定时器，防止叠加
+  timer = setInterval(step, SPEED_MS);  // 启动主循环
 }
 
+// ══════════════════════════════════════════════
+//  随机生成食物（确保不与蛇身重叠）
+// ══════════════════════════════════════════════
 function spawnFood() {
   let pos;
-  do { pos = {x:Math.floor(Math.random()*COLS), y:Math.floor(Math.random()*ROWS)}; }
-  while (snake.some(s=>s.x===pos.x&&s.y===pos.y));
+  do {
+    pos = {
+      x: Math.floor(Math.random() * COLS),
+      y: Math.floor(Math.random() * ROWS),
+    };
+    // 如果随机位置与蛇身任意一节重合，则重新随机
+  } while (snake.some(s => s.x === pos.x && s.y === pos.y));
   food = pos;
 }
 
+// ══════════════════════════════════════════════
+//  游戏主循环：每 SPEED_MS 毫秒执行一次
+// ══════════════════════════════════════════════
 function step() {
-  if(state !== 'play') return;
+  if (state !== 'play') return;
+
+  // 本帧应用下一帧方向（避免同帧多次按键的反向穿透）
   dir = nextDir;
-  const head = {x: snake[0].x+dir.x, y: snake[0].y+dir.y};
-  if(head.x<0||head.x>=COLS||head.y<0||head.y>=ROWS||snake.some(s=>s.x===head.x&&s.y===head.y)) {
-    state='over'; if(score>best) best=score; draw(); return;
+
+  // 计算蛇头新位置
+  const head = {
+    x: snake[0].x + dir.x,
+    y: snake[0].y + dir.y,
+  };
+
+  // ── 碰撞检测 ──
+  const hitWall = head.x < 0 || head.x >= COLS || head.y < 0 || head.y >= ROWS;
+  const hitSelf = snake.some(s => s.x === head.x && s.y === head.y);
+
+  if (hitWall || hitSelf) {
+    state = 'over';                          // 切换到结束状态
+    if (score > best) best = score;          // 更新历史最高分
+    clearInterval(timer);                    // 停止主循环
+    draw();
+    return;
   }
+
+  // 将新头插入蛇数组最前面
   snake.unshift(head);
-  if(head.x===food.x&&head.y===food.y) { score+=10; spawnFood(); }
-  else snake.pop();
+
+  // ── 吃到食物 ──
+  if (head.x === food.x && head.y === food.y) {
+    score += 10;      // 加分
+    spawnFood();      // 重新生成食物
+    // 不移除尾部 → 蛇身变长1节
+  } else {
+    snake.pop();      // 未吃到食物：移除尾部，保持长度不变
+  }
+
   draw();
 }
 
-function drawGrid() {
-  ctx.strokeStyle = COLORS.grid;
-  ctx.lineWidth = 0.5;
-  for(let x=0;x<=COLS;x++){ctx.beginPath();ctx.moveTo(x*SZ,0);ctx.lineTo(x*SZ,H);ctx.stroke();}
-  for(let y=0;y<=ROWS;y++){ctx.beginPath();ctx.moveTo(0,y*SZ);ctx.lineTo(W,y*SZ);ctx.stroke();}
-}
-
-function drawRoundRect(x,y,w,h,r,fill,stroke) {
-  ctx.beginPath();
-  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y); ctx.quadraticCurveTo(x+w,y,x+w,y+r);
-  ctx.lineTo(x+w,y+h-r); ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
-  ctx.lineTo(x+r,y+h); ctx.quadraticCurveTo(x,y+h,x,y+h-r);
-  ctx.lineTo(x,y+r); ctx.quadraticCurveTo(x,y,x+r,y); ctx.closePath();
-  ctx.fillStyle=fill; ctx.fill();
-  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=1.5;ctx.stroke();}
-}
-
+// ══════════════════════════════════════════════
+//  绘制函数：每帧完整重绘画面
+// ══════════════════════════════════════════════
 function draw() {
-  ctx.fillStyle = COLORS.bg;
-  ctx.fillRect(0,0,W,H);
+  // 1. 清空背景
+  ctx.fillStyle = COLOR.bg;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  // 2. 绘制网格
   drawGrid();
-  const pad=2, r=4;
-  snake.forEach((s,i)=>{
-    const grd = ctx.createLinearGradient(s.x*SZ,s.y*SZ,(s.x+1)*SZ,(s.y+1)*SZ);
-    if(i===0){grd.addColorStop(0,'#6ee7a0');grd.addColorStop(1,'#22c55e');}
-    else{grd.addColorStop(0,'#22c55e');grd.addColorStop(1,'#16a34a');}
-    drawRoundRect(s.x*SZ+pad,s.y*SZ+pad,SZ-pad*2,SZ-pad*2,r,i===0?COLORS.snakeHead:COLORS.snakeBody,i===0?'#bbf7d0':null);
-    if(i===0){
-      ctx.fillStyle='#1a1a2e';
-      const ex=dir.x, ey=dir.y;
-      const ex2=-ey, ey2=ex;
-      const cx=(s.x+0.5)*SZ, cy=(s.y+0.5)*SZ;
-      const eSz=2;
-      [[ex*4+ex2*3,ey*4+ey2*3],[ex*4-ex2*3,ey*4-ey2*3]].forEach(([dx,dy])=>{
-        ctx.beginPath(); ctx.arc(cx+dx,cy+dy,eSz,0,Math.PI*2); ctx.fill();
-      });
-    }
-  });
-  const fp=3;
-  const grd2=ctx.createRadialGradient((food.x+0.5)*SZ,(food.y+0.5)*SZ,1,(food.x+0.5)*SZ,(food.y+0.5)*SZ,SZ/2-2);
-  grd2.addColorStop(0,'#fca5a5'); grd2.addColorStop(1,'#ef4444');
-  drawRoundRect(food.x*SZ+fp,food.y*SZ+fp,SZ-fp*2,SZ-fp*2,5,COLORS.food,null);
-  ctx.fillStyle='rgba(252,165,165,0.35)';
-  ctx.beginPath(); ctx.arc((food.x+0.5)*SZ-3,(food.y+0.5)*SZ-3,3,0,Math.PI*2); ctx.fill();
-  ctx.fillStyle=COLORS.text;
-  ctx.font='500 14px sans-serif'; ctx.textAlign='left';
-  ctx.fillText('分数: '+score, 10, 22);
-  ctx.textAlign='right';
-  ctx.fillStyle=COLORS.score;
-  ctx.fillText('最高: '+best, W-10, 22);
-  if(state==='idle'||state==='over') {
-    ctx.fillStyle=COLORS.overlay; ctx.fillRect(0,0,W,H);
-    ctx.textAlign='center';
-    if(state==='over') {
-      ctx.font='500 32px sans-serif'; ctx.fillStyle='#f87171';
-      ctx.fillText('游戏结束', W/2, H/2-50);
-      ctx.font='500 20px sans-serif'; ctx.fillStyle=COLORS.text;
-      ctx.fillText('最终分数：'+score, W/2, H/2-10);
-      if(score>=best&&score>0){ctx.font='14px sans-serif';ctx.fillStyle=COLORS.accent;ctx.fillText('新纪录！', W/2, H/2+20);}
-    } else {
-      ctx.font='500 28px sans-serif'; ctx.fillStyle=COLORS.snakeHead;
-      ctx.fillText('贪吃蛇', W/2, H/2-30);
-    }
-    ctx.font='16px sans-serif'; ctx.fillStyle=COLORS.score;
-    ctx.fillText('按 R 键开始 / 重新开始', W/2, H/2+60);
+
+  // 3. 绘制蛇
+  drawSnake();
+
+  // 4. 绘制食物
+  drawFood();
+
+  // 5. 绘制分数
+  drawScore();
+
+  // 6. 如果游戏未在进行中，绘制遮罩（开始界面 / 结束界面）
+  if (state === 'idle' || state === 'over') {
+    drawOverlay();
   }
 }
 
-document.addEventListener('keydown', e=>{
-  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','w','a','s','d','r','R',' '].includes(e.key)) e.preventDefault();
-  const k=e.key;
-  if(k==='r'||k==='R') { init(); return; }
-  if(state!=='play') return;
-  if((k==='ArrowUp'||k==='w')&&dir.y!==1) nextDir={x:0,y:-1};
-  else if((k==='ArrowDown'||k==='s')&&dir.y!==-1) nextDir={x:0,y:1};
-  else if((k==='ArrowLeft'||k==='a')&&dir.x!==1) nextDir={x:-1,y:0};
-  else if((k==='ArrowRight'||k==='d')&&dir.x!==-1) nextDir={x:1,y:0};
+// ── 绘制淡色网格 ──
+function drawGrid() {
+  ctx.strokeStyle = COLOR.grid;
+  ctx.lineWidth   = 0.5;
+  for (let x = 0; x <= COLS; x++) {
+    ctx.beginPath();
+    ctx.moveTo(x * CELL_SIZE, 0);
+    ctx.lineTo(x * CELL_SIZE, CANVAS_H);
+    ctx.stroke();
+  }
+  for (let y = 0; y <= ROWS; y++) {
+    ctx.beginPath();
+    ctx.moveTo(0, y * CELL_SIZE);
+    ctx.lineTo(CANVAS_W, y * CELL_SIZE);
+    ctx.stroke();
+  }
+}
+
+// ── 绘制圆角矩形（通用工具函数）──
+// x,y: 左上角坐标  w,h: 宽高  r: 圆角半径
+// fill: 填充色  stroke: 描边色（可选）
+function drawRoundRect(x, y, w, h, r, fill, stroke) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y,     x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x,     y + h, x,     y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x,     y,     x + r, y);
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+  if (stroke) {
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth   = 1.5;
+    ctx.stroke();
+  }
+}
+
+// ── 绘制蛇身和蛇头（含眼睛）──
+function drawSnake() {
+  const pad = 2;  // 格子内边距，让蛇看起来有间隔感
+  const r   = 4;  // 圆角半径
+
+  snake.forEach((seg, i) => {
+    const isHead = i === 0;
+    const color  = isHead ? COLOR.snakeHead : COLOR.snakeBody;
+
+    // 绘制蛇节（圆角矩形）
+    drawRoundRect(
+      seg.x * CELL_SIZE + pad,
+      seg.y * CELL_SIZE + pad,
+      CELL_SIZE - pad * 2,
+      CELL_SIZE - pad * 2,
+      r,
+      color,
+      isHead ? 'rgba(255,255,255,0.2)' : null  // 蛇头加淡描边
+    );
+
+    // 仅为蛇头绘制两个眼睛
+    if (isHead) {
+      drawEyes(seg);
+    }
+  });
+}
+
+// ── 根据方向在蛇头绘制眼睛 ──
+function drawEyes(head) {
+  const cx = (head.x + 0.5) * CELL_SIZE;  // 蛇头中心 X
+  const cy = (head.y + 0.5) * CELL_SIZE;  // 蛇头中心 Y
+
+  // 眼睛沿前进方向偏移，并在垂直方向左右分布
+  // ex,ey: 前进方向单位向量  ex2,ey2: 垂直方向（旋转90°）
+  const ex = dir.x, ey = dir.y;
+  const ex2 = -ey, ey2 = ex;
+
+  const eyeOffset  = 4;  // 眼睛沿前进方向偏移量
+  const eyeSpread  = 3;  // 眼睛在垂直方向上的展开量
+  const eyeRadius  = 2;  // 眼睛圆点半径
+
+  ctx.fillStyle = COLOR.snakeEye;
+
+  // 左眼
+  ctx.beginPath();
+  ctx.arc(
+    cx + ex * eyeOffset + ex2 * eyeSpread,
+    cy + ey * eyeOffset + ey2 * eyeSpread,
+    eyeRadius, 0, Math.PI * 2
+  );
+  ctx.fill();
+
+  // 右眼
+  ctx.beginPath();
+  ctx.arc(
+    cx + ex * eyeOffset - ex2 * eyeSpread,
+    cy + ey * eyeOffset - ey2 * eyeSpread,
+    eyeRadius, 0, Math.PI * 2
+  );
+  ctx.fill();
+}
+
+// ── 绘制食物（带高光的红色圆角方块）──
+function drawFood() {
+  const pad = 3;
+  drawRoundRect(
+    food.x * CELL_SIZE + pad,
+    food.y * CELL_SIZE + pad,
+    CELL_SIZE - pad * 2,
+    CELL_SIZE - pad * 2,
+    5,
+    COLOR.food
+  );
+
+  // 左上角高光小圆点，增加立体感
+  ctx.fillStyle = COLOR.foodShine;
+  ctx.beginPath();
+  ctx.arc(
+    (food.x + 0.3) * CELL_SIZE,
+    (food.y + 0.3) * CELL_SIZE,
+    2.5, 0, Math.PI * 2
+  );
+  ctx.fill();
+}
+
+// ── 绘制分数（左上角当前分数，右上角最高分）──
+function drawScore() {
+  ctx.font      = '500 14px "Segoe UI", system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillStyle = COLOR.scoreText;
+  ctx.fillText('分数: ' + score, 10, 22);
+
+  ctx.textAlign = 'right';
+  ctx.fillStyle = COLOR.scoreMuted;
+  ctx.fillText('最高: ' + best, CANVAS_W - 10, 22);
+}
+
+// ── 绘制半透明遮罩层（开始界面 / 游戏结束界面）──
+function drawOverlay() {
+  // 半透明遮罩
+  ctx.fillStyle = COLOR.overlay;
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  ctx.textAlign = 'center';
+
+  if (state === 'over') {
+    // ── 游戏结束界面 ──
+
+    // 大标题："游戏结束"
+    ctx.font      = '500 36px "Segoe UI", system-ui, sans-serif';
+    ctx.fillStyle = COLOR.danger;
+    ctx.fillText('游戏结束', CANVAS_W / 2, CANVAS_H / 2 - 55);
+
+    // 最终分数
+    ctx.font      = '500 22px "Segoe UI", system-ui, sans-serif';
+    ctx.fillStyle = COLOR.scoreText;
+    ctx.fillText('最终分数：' + score, CANVAS_W / 2, CANVAS_H / 2 - 15);
+
+    // 如果打破纪录，显示提示
+    if (score > 0 && score >= best) {
+      ctx.font      = '14px "Segoe UI", system-ui, sans-serif';
+      ctx.fillStyle = COLOR.accent;
+      ctx.fillText('✦ 新纪录！', CANVAS_W / 2, CANVAS_H / 2 + 18);
+    }
+
+  } else {
+    // ── 待机（开始）界面 ──
+
+    ctx.font      = '500 32px "Segoe UI", system-ui, sans-serif';
+    ctx.fillStyle = COLOR.green;
+    ctx.fillText('贪吃蛇', CANVAS_W / 2, CANVAS_H / 2 - 25);
+  }
+
+  // 通用提示：按 R 开始
+  ctx.font      = '15px "Segoe UI", system-ui, sans-serif';
+  ctx.fillStyle = COLOR.scoreMuted;
+  ctx.fillText('按 R 键开始 / 重新开始', CANVAS_W / 2, CANVAS_H / 2 + 58);
+}
+
+// ══════════════════════════════════════════════
+//  键盘事件监听
+// ══════════════════════════════════════════════
+document.addEventListener('keydown', (e) => {
+  // 阻止方向键滚动页面
+  const blocked = ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '];
+  if (blocked.includes(e.key)) e.preventDefault();
+
+  const k = e.key;
+
+  // R 键：重新开始（任何状态均可响应）
+  if (k === 'r' || k === 'R') {
+    init();
+    return;
+  }
+
+  // 游戏进行中才处理方向键
+  if (state !== 'play') return;
+
+  // 方向键 / WASD 控制，同时禁止直接反向（如向右时不能直接按左）
+  if ((k === 'ArrowUp'    || k === 'w') && dir.y !== 1)  nextDir = { x: 0,  y: -1 };
+  if ((k === 'ArrowDown'  || k === 's') && dir.y !== -1) nextDir = { x: 0,  y:  1 };
+  if ((k === 'ArrowLeft'  || k === 'a') && dir.x !== 1)  nextDir = { x: -1, y:  0 };
+  if ((k === 'ArrowRight' || k === 'd') && dir.x !== -1) nextDir = { x: 1,  y:  0 };
 });
 
-canvas.setAttribute('tabindex','0');
-canvas.addEventListener('click',()=>canvas.focus());
-
-state='idle'; draw();
+// ══════════════════════════════════════════════
+//  启动：显示待机画面（不自动开始，等玩家按 R）
+// ══════════════════════════════════════════════
+state = 'idle';
+// 初始化一条虚拟蛇（仅用于待机画面渲染）
+const cx = Math.floor(COLS / 2), cy = Math.floor(ROWS / 2);
+snake = [{ x: cx, y: cy }, { x: cx-1, y: cy }, { x: cx-2, y: cy }];
+dir   = { x: 1, y: 0 };
+score = 0;
+food  = { x: Math.floor(COLS * 0.7), y: cy };  // 待机时展示一个食物
+draw();
 </script>
+
+</body>
+</html>
